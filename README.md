@@ -97,13 +97,15 @@ The profile scoring system uses a hybrid approach that considers:
 
 ## 📋 Core Modules
 
-- `core/profile_scoring.py`: Implements the hybrid scoring system
-- `core/query_generator.py`: Generates optimized search queries
-- `core/image_similarity.py`: Handles CLIP-based image comparison
-- `core/social_scraper.py`: Scrapes social media profiles
-- `core/name_expansion.py`: Expands abbreviated names
-- `api/gemini_api.py`: Handles AI enrichment with Gemini
-- `api/people_api.py`: Integrates with People Data Labs API for professional enrichment
+- `main.py`: Entry-point for command-line usage
+- `app.py`: Streamlit web app
+- `core/profile_scraper.py`: Social media profile scraping
+- `api/people_api.py`: Professional data enrichment with People Data Labs
+- `api/gemini_api.py`: AI enrichment with Gemini
+- `core/image_similarity.py`: Handles lightweight perceptual hash-based image comparison
+- `core/name_utils.py`: Name parsing and expansion
+- `core/search.py`: LinkedIn search query generation
+- `core/profile_scoring.py`: Candidate matching and scoring functions
 
 ## 📝 License
 

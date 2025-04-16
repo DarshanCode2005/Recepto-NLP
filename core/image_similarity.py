@@ -1,8 +1,7 @@
 import os
-import torch
-import clip
-import numpy as np
 import requests
+import imagehash
+import numpy as np
 from PIL import Image
 from io import BytesIO
 from typing import Optional, Tuple, Union
@@ -13,16 +12,6 @@ load_dotenv()
 
 # Constants
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Load CLIP model once
-try:
-    model, preprocess = clip.load("ViT-B/32", device=DEVICE)
-    print(f"CLIP model loaded successfully on {DEVICE}")
-except Exception as e:
-    print(f"Error loading CLIP model: {e}")
-    model, preprocess = None, None
-
 
 def load_image_from_url(url: str) -> Optional[Image.Image]:
     """
@@ -38,7 +27,7 @@ def load_image_from_url(url: str) -> Optional[Image.Image]:
         response.raise_for_status()
         img = Image.open(BytesIO(response.content))
         
-        # Convert to RGB if needed (CLIP expects RGB images)
+        # Convert to RGB if needed
         if img.mode != "RGB":
             img = img.convert("RGB")
         
@@ -87,20 +76,10 @@ def get_linkedin_profile_image(linkedin_id: str) -> Optional[str]:
         return None
 
 
-def get_clip_embedding(image: Union[str, Image.Image]) -> Optional[torch.Tensor]:
+def get_image_hash(image: Union[str, Image.Image]) -> Optional[imagehash.ImageHash]:
     """
-    Get CLIP embedding from an image URL or PIL Image.
-    Returns the normalized embedding tensor.
+    Calculate perceptual hash for an image URL or PIL Image.
     """
-    global model, preprocess
-    if model is None or preprocess is None:
-        # Try to load the model again
-        try:
-            model, preprocess = clip.load("ViT-B/32", device=DEVICE)
-        except Exception as e:
-            print(f"Could not load CLIP model: {e}")
-            return None
-    
     try:
         # Load image if URL is provided
         if isinstance(image, str):
@@ -110,32 +89,27 @@ def get_clip_embedding(image: Union[str, Image.Image]) -> Optional[torch.Tensor]
         else:
             img = image
         
-        # Preprocess the image
-        processed_image = preprocess(img).unsqueeze(0).to(DEVICE)
-        
-        # Generate embedding
-        with torch.no_grad():
-            image_features = model.encode_image(processed_image)
-            # Normalize the features
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        
-        return image_features
+        # Calculate perceptual hash (using phash for better accuracy)
+        img_hash = imagehash.phash(img)
+        return img_hash
     except Exception as e:
-        print(f"Error generating CLIP embedding: {e}")
+        print(f"Error generating image hash: {e}")
         return None
 
 
-def compute_similarity(embedding1: torch.Tensor, embedding2: torch.Tensor) -> float:
+def compute_similarity(hash1: imagehash.ImageHash, hash2: imagehash.ImageHash) -> float:
     """
-    Compute cosine similarity between two embeddings.
+    Compute similarity between two image hashes.
     Returns a float between 0 and 1.
     """
     try:
-        # Compute cosine similarity
-        similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2)
-        # Convert to float and ensure it's between 0 and 1
-        similarity_score = float(similarity.item())
-        return max(0.0, min(1.0, (similarity_score + 1) / 2))  # Scale from [-1,1] to [0,1]
+        # Calculate hash distance
+        hash_distance = hash1 - hash2
+        # Convert to similarity score (0-1)
+        # Maximum hash distance depends on hash size, typically 64-bit hash has max distance of 64
+        max_distance = 64.0  # For standard phash
+        similarity = 1.0 - (hash_distance / max_distance)
+        return max(0.0, min(1.0, similarity))
     except Exception as e:
         print(f"Error computing similarity: {e}")
         return 0.0
@@ -143,7 +117,8 @@ def compute_similarity(embedding1: torch.Tensor, embedding2: torch.Tensor) -> fl
 
 def compare_image_similarity_clip(url1: str, url2: str) -> float:
     """
-    Compare two images using the CLIP model and return a similarity score.
+    Compare two images using perceptual hashing and return a similarity score.
+    Note: Function name kept the same for backward compatibility.
     
     Args:
         url1: URL of the first image
@@ -152,17 +127,17 @@ def compare_image_similarity_clip(url1: str, url2: str) -> float:
     Returns:
         Similarity score between 0 and 1
     """
-    # Get embeddings
-    embedding1 = get_clip_embedding(url1)
-    embedding2 = get_clip_embedding(url2)
+    # Get image hashes
+    hash1 = get_image_hash(url1)
+    hash2 = get_image_hash(url2)
     
-    # Check if we have valid embeddings
-    if embedding1 is None or embedding2 is None:
-        print("Could not generate valid embeddings for both images")
+    # Check if we have valid hashes
+    if hash1 is None or hash2 is None:
+        print("Could not generate valid hashes for both images")
         return 0.0
     
     # Compute similarity
-    return compute_similarity(embedding1, embedding2)
+    return compute_similarity(hash1, hash2)
 
 
 def compare_linkedin_with_persona(linkedin_id: str, persona_image_url: str) -> Tuple[float, Optional[str]]:
