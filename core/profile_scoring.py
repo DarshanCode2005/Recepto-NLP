@@ -12,22 +12,30 @@ import json
 import math
 from typing import Dict, List, Optional, Tuple, Union
 import logging
+import google.generativeai as genai
+from dotenv import load_dotenv
 
 from fuzzywuzzy import fuzz
-from sentence_transformers import SentenceTransformer, util
-import torch
 import geopy.distance
 from timezonefinder import TimezoneFinder
 import pytz
 from datetime import datetime
 import requests
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from core.social_scraper import scrape_social_profiles, enrich_persona_with_social_data
 
-# Initialize BERT model for semantic similarity
+# Load environment variables
+load_dotenv()
+
+# Initialize Gemini API
 try:
-    bert_model = SentenceTransformer('all-MiniLM-L6-v2')
+    genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+    gemini_model = genai.GenerativeModel('gemini-2.0-flash')
 except Exception as e:
-    logging.warning(f"Could not load BERT model: {e}")
-    bert_model = None
+    logging.warning(f"Could not initialize Gemini API: {e}")
+    gemini_model = None
 
 # Initialize TimezoneFinder for location scoring
 tf = TimezoneFinder()
@@ -69,7 +77,7 @@ def compute_name_score(persona_name: str, candidate_name: str) -> float:
 
 def compute_semantic_score(persona_intro: str, candidate_intro: str) -> float:
     """
-    Compute a semantic similarity score between persona intro and candidate intro using BERT.
+    Compute a semantic similarity score between persona intro and candidate intro using Gemini API.
     
     Args:
         persona_intro: The introduction text from the persona
@@ -78,20 +86,32 @@ def compute_semantic_score(persona_intro: str, candidate_intro: str) -> float:
     Returns:
         float: A score between 0 and 1 indicating semantic similarity
     """
-    if not persona_intro or not candidate_intro or not bert_model:
+    if not persona_intro or not candidate_intro or not gemini_model:
         return 0.0
     
     try:
-        # Get embeddings for both texts
-        persona_embedding = bert_model.encode(persona_intro, convert_to_tensor=True)
-        candidate_embedding = bert_model.encode(candidate_intro, convert_to_tensor=True)
+        # Create a prompt for semantic similarity analysis
+        prompt = f"""Compare the following two professional descriptions and provide a similarity score between 0 and 1.
+        Only respond with the numerical score, nothing else.
+
+        Description 1: {persona_intro}
+        Description 2: {candidate_intro}"""
+
+        # Get response from Gemini
+        response = gemini_model.generate_content(prompt)
         
-        # Calculate cosine similarity
-        similarity = util.pytorch_cos_sim(persona_embedding, candidate_embedding).item()
-        
-        return max(0.0, min(float(similarity), 1.0))
+        # Extract the score from the response
+        try:
+            score = float(response.text.strip())
+            # Ensure score is between 0 and 1
+            score = max(0.0, min(1.0, score))
+            return score
+        except ValueError:
+            logging.error("Could not parse similarity score from Gemini response")
+            return 0.0
+            
     except Exception as e:
-        logging.error(f"Error computing semantic score: {e}")
+        logging.error(f"Error computing semantic score with Gemini: {e}")
         return 0.0
 
 def compute_industry_score(persona_industry: str, candidate_industry: str) -> float:
@@ -256,6 +276,7 @@ def extract_username_from_url(url: str) -> Optional[str]:
 def compute_social_score(persona_socials: List[Dict], candidate_socials: List[Dict]) -> float:
     """
     Compute a similarity score based on matching social profiles.
+    Uses social_scraper to get detailed profile information for richer comparison.
     
     Args:
         persona_socials: List of social profiles from the persona
@@ -267,48 +288,71 @@ def compute_social_score(persona_socials: List[Dict], candidate_socials: List[Di
     if not persona_socials or not candidate_socials:
         return 0.0
     
-    match_count = 0
-    total_socials = len(persona_socials)
+    # Extract URLs from social profiles
+    persona_urls = [profile.get('url', '') for profile in persona_socials if profile.get('url')]
+    candidate_urls = [profile.get('url', '') for profile in candidate_socials if profile.get('url')]
     
-    for p_social in persona_socials:
-        p_platform = p_social.get('platform', '').lower()
-        p_username = p_social.get('username', '')
-        
-        if not p_username and 'url' in p_social:
-            p_username = extract_username_from_url(p_social['url'])
+    # Scrape detailed profile information
+    persona_profiles = scrape_social_profiles(persona_urls)
+    candidate_profiles = scrape_social_profiles(candidate_urls)
+    
+    if not persona_profiles or not candidate_profiles:
+        return 0.0
+    
+    match_count = 0
+    total_socials = len(persona_profiles)
+    
+    for p_profile in persona_profiles:
+        p_platform = p_profile.get('platform', '').lower()
+        p_username = p_profile.get('username', '')
+        p_display_name = p_profile.get('display_name', '')
+        p_bio = p_profile.get('bio', '')
+        p_location = p_profile.get('location', '')
+        p_company = p_profile.get('company', '')
         
         if not p_platform or not p_username:
             continue
         
-        for c_social in candidate_socials:
-            c_platform = c_social.get('platform', '').lower()
-            c_username = c_social.get('username', '')
-            
-            if not c_username and 'url' in c_social:
-                c_username = extract_username_from_url(c_social['url'])
+        for c_profile in candidate_profiles:
+            c_platform = c_profile.get('platform', '').lower()
+            c_username = c_profile.get('username', '')
+            c_display_name = c_profile.get('display_name', '')
+            c_bio = c_profile.get('bio', '')
+            c_location = c_profile.get('location', '')
+            c_company = c_profile.get('company', '')
             
             if p_platform == c_platform:
-                # Score different platforms differently
-                platform_weight = 1.0
-                if p_platform == 'twitter':
-                    # Twitter username match is very distinctive
-                    username_match = fuzz.ratio(p_username.lower(), c_username.lower()) / 100
-                    if username_match > 0.9:  # Exact or near exact match
-                        match_count += platform_weight
-                    elif username_match > 0.7:  # Similar username
-                        match_count += platform_weight * 0.7
-                elif p_platform == 'github':
-                    # GitHub username match is also distinctive
-                    username_match = fuzz.ratio(p_username.lower(), c_username.lower()) / 100
-                    if username_match > 0.9:
-                        match_count += platform_weight
-                    elif username_match > 0.7:
-                        match_count += platform_weight * 0.7
-                else:
-                    # Other platforms - less weight
-                    username_match = fuzz.ratio(p_username.lower(), c_username.lower()) / 100
-                    if username_match > 0.8:
-                        match_count += platform_weight * 0.8
+                # Score different aspects of the profiles
+                scores = []
+                
+                # Username match (most important)
+                username_match = fuzz.ratio(p_username.lower(), c_username.lower()) / 100
+                scores.append(username_match * 0.4)  # 40% weight
+                
+                # Display name match
+                if p_display_name and c_display_name:
+                    display_name_match = fuzz.ratio(p_display_name.lower(), c_display_name.lower()) / 100
+                    scores.append(display_name_match * 0.2)  # 20% weight
+                
+                # Bio similarity
+                if p_bio and c_bio:
+                    bio_match = fuzz.ratio(p_bio.lower(), c_bio.lower()) / 100
+                    scores.append(bio_match * 0.2)  # 20% weight
+                
+                # Location match
+                if p_location and c_location:
+                    location_match = fuzz.ratio(p_location.lower(), c_location.lower()) / 100
+                    scores.append(location_match * 0.1)  # 10% weight
+                
+                # Company match
+                if p_company and c_company:
+                    company_match = fuzz.ratio(p_company.lower(), c_company.lower()) / 100
+                    scores.append(company_match * 0.1)  # 10% weight
+                
+                # Calculate weighted average of all available scores
+                if scores:
+                    profile_score = sum(scores)
+                    match_count += profile_score
     
     # Normalize the score
     if total_socials > 0:
@@ -429,6 +473,32 @@ def score_linkedin_candidate(persona: Dict, candidate: Dict) -> Dict:
     }
     
     return result
+
+def rank_linkedin_candidates(persona: Dict, candidates: List[Dict]) -> List[Dict]:
+    """
+    Score and rank LinkedIn candidates based on similarity to a persona.
+    
+    Args:
+        persona: Dictionary containing persona information
+        candidates: List of LinkedIn candidate profiles to score
+        
+    Returns:
+        List of scored and ranked candidates
+    """
+    # Score each candidate
+    scored_candidates = []
+    for candidate in candidates:
+        scored_candidate = score_linkedin_candidate(persona, candidate)
+        scored_candidates.append(scored_candidate)
+    
+    # Sort by confidence score in descending order
+    ranked_candidates = sorted(
+        scored_candidates, 
+        key=lambda x: x['confidence'], 
+        reverse=True
+    )
+    
+    return ranked_candidates
 
 # Example usage
 if __name__ == "__main__":

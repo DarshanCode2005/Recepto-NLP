@@ -6,6 +6,7 @@ from PIL import Image
 from io import BytesIO
 from typing import Optional, Tuple, Union
 from dotenv import load_dotenv
+import time
 
 # Load environment variables
 load_dotenv()
@@ -39,7 +40,7 @@ def load_image_from_url(url: str) -> Optional[Image.Image]:
 
 def get_linkedin_profile_image(linkedin_id: str) -> Optional[str]:
     """
-    Fetch a LinkedIn profile picture URL using ScrapingDog API.
+    Fetch a LinkedIn profile picture URL using Brightdata API.
     Returns None if the profile picture cannot be fetched.
     """
     if not linkedin_id:
@@ -51,26 +52,84 @@ def get_linkedin_profile_image(linkedin_id: str) -> Optional[str]:
         linkedin_id = linkedin_id.split("/")[-1]
     
     # Get API key from environment variables
-    api_key = os.environ.get("SCRAPINGDOG_API_KEY")
+    api_key = os.environ.get("BRIGHTDATA_API_KEY")
     if not api_key:
-        print("SCRAPINGDOG_API_KEY not set in environment variables")
+        print("BRIGHTDATA_API_KEY not set in environment variables")
         return None
     
     try:
-        url = f"https://api.scrapingdog.com/linkedin"
+        BASE = "https://api.brightdata.com/datasets/v3"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
         params = {
-            "api_key": api_key,
-            "type": "profile",
-            "linkId": linkedin_id
+            "dataset_id": "gd_l1viktl72bvl7bjuj0",
+            "include_errors": "true",
         }
         
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
+        # Construct the LinkedIn URL
+        linkedin_url = f"https://www.linkedin.com/in/{linkedin_id}"
         
-        data = response.json()
-        profile_pic_url = data.get("profile_pic_url")
+        # Trigger the snapshot
+        trigger = requests.post(
+            f"{BASE}/trigger",
+            headers=headers,
+            params=params,
+            json=[{"url": linkedin_url}],
+        )
+        trigger.raise_for_status()
+        snap_resp = trigger.json()
+        snapshot_id = snap_resp.get("snapshot_id")
+        if not snapshot_id:
+            print(f"No snapshot_id in trigger response: {snap_resp}")
+            return None
         
-        return profile_pic_url
+        print(f"Triggered snapshot: {snapshot_id}")
+        
+        # Wait for the snapshot to be ready
+        download_url = f"{BASE}/snapshot/{snapshot_id}"
+        for attempt in range(60):  # ~5 minutes max
+            r = requests.get(download_url, headers=headers)
+            
+            if r.status_code == 202:
+                try:
+                    status = r.json().get("status")
+                except ValueError:
+                    status = "unknown"
+                print(f"[{attempt+1:02d}/60] task not completed status={status}")
+                time.sleep(5)
+                continue
+            
+            if r.status_code == 404:
+                print(f"Snapshot not found: {snapshot_id}")
+                return None
+            
+            r.raise_for_status()
+            
+            data = r.json()
+            print("Snapshot ready, fetched results.")
+            
+            # Extract profile picture URL from the response
+            if isinstance(data, list) and len(data) > 0:
+                profile_data = data[0]
+            else:
+                profile_data = data
+                
+            # Try to get the profile picture URL using different possible keys
+            profile_pic_url = None
+            possible_keys = ["profile_pic_url", "profilePicture", "profile_picture", "picture", "image"]
+            
+            for key in possible_keys:
+                if isinstance(profile_data, dict) and key in profile_data:
+                    profile_pic_url = profile_data[key]
+                    if profile_pic_url:
+                        break
+            
+            return profile_pic_url
+        
+        print("Timed out waiting for snapshot to be ready")
+        return None
     except Exception as e:
         print(f"Error fetching LinkedIn profile picture for {linkedin_id}: {e}")
         return None
@@ -167,6 +226,7 @@ def compare_linkedin_with_persona(linkedin_id: str, persona_image_url: str) -> T
 def validate_persona_match(linkedin_candidates: list, persona: dict, threshold: float = 0.7) -> list:
     """
     Validate LinkedIn profile candidates against a persona image.
+    Currently disabled due to issues with image similarity.
     
     Args:
         linkedin_candidates: List of LinkedIn profile candidates
@@ -174,58 +234,32 @@ def validate_persona_match(linkedin_candidates: list, persona: dict, threshold: 
         threshold: Minimum similarity score to consider a match (0-1)
         
     Returns:
-        List of validated candidates with similarity scores
+        List of candidates with default image similarity values
     """
-    if not persona.get("image"):
-        # If no image, return original candidates
-        return linkedin_candidates
+    # Skip image similarity check for now
+    print("Image similarity check is currently disabled")
     
-    persona_image_url = persona.get("image")
-    validated_candidates = []
-    
+    # Add default values to candidates
     for candidate in linkedin_candidates:
-        linkedin_id = candidate.get("link", "")
-        
-        # Skip if no valid LinkedIn ID
-        if not linkedin_id or "linkedin.com/in/" not in linkedin_id:
-            continue
-        
-        # Compare images
-        similarity, linkedin_image_url = compare_linkedin_with_persona(linkedin_id, persona_image_url)
-        
-        # Add similarity info to candidate
-        candidate["image_similarity"] = similarity
-        candidate["profile_image"] = linkedin_image_url
-        
-        # Check if similarity is above threshold
-        if similarity >= threshold:
-            candidate["image_match"] = True
-        else:
-            candidate["image_match"] = False
-        
-        validated_candidates.append(candidate)
+        candidate["image_similarity"] = 0.0
+        candidate["profile_image"] = None
+        candidate["image_match"] = False
     
-    # Sort by similarity score (highest first)
-    validated_candidates.sort(key=lambda x: x.get("image_similarity", 0), reverse=True)
-    
-    return validated_candidates
+    return linkedin_candidates
 
 
 # Example usage
 if __name__ == "__main__":
-    # Test with sample images
-    image_url1 = "https://github.com/octocat.png"
-    image_url2 = "https://avatars.githubusercontent.com/u/583231?v=4"
+    print("Image similarity functionality is currently disabled.")
+    print("To test other functionality, you can use the following code:")
     
-    similarity = compare_image_similarity_clip(image_url1, image_url2)
-    print(f"Similarity between images: {similarity:.4f}")
+    # Example of how to use the disabled functionality
+    # linkedin_id = "https://www.linkedin.com/in/zhawtof/"
+    # persona_image = "https://drive.google.com/file/d/1G4nkXOR_f-RGKdXw0HJctVmVVcSU6VS2/view?usp=drive_link"
     
-    # Example LinkedIn validation
-    linkedin_id = "some-linkedin-id"
-    persona_image = "https://example.com/image.jpg"
-    
-    # Ensure we have the API key before attempting to call
-    if os.environ.get("SCRAPINGDOG_API_KEY"):
-        sim, linkedin_url = compare_linkedin_with_persona(linkedin_id, persona_image)
-        print(f"LinkedIn profile similarity: {sim:.4f}")
-        print(f"LinkedIn profile image URL: {linkedin_url}")
+    # if os.environ.get("BRIGHTDATA_API_KEY"):
+    #     sim, linkedin_url = compare_linkedin_with_persona(linkedin_id, persona_image)
+    #     print(f"LinkedIn profile similarity: {sim:.4f}")
+    #     print(f"LinkedIn profile image URL: {linkedin_url}")
+    # else:
+    #     print("BRIGHTDATA_API_KEY not set in environment variables")
