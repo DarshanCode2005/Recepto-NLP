@@ -331,3 +331,95 @@ with tabs[2]:
                         st.error(f"Error searching LinkedIn profiles: {e}")
             else:
                 st.error("SERPAPI_API_KEY not set in .env file. Cannot search LinkedIn profiles.")
+
+        if "search_results" in st.session_state and st.button("Score and Rank Profiles"):
+            with st.spinner("Scoring and ranking LinkedIn profiles..."):
+                scored_results = rank_linkedin_candidates(search_persona, st.session_state.search_results)
+                st.session_state.scored_results = scored_results
+
+                st.subheader("Ranked LinkedIn Profiles")
+                for i, result in enumerate(scored_results):
+                    confidence = result["confidence"]
+                    with st.expander(f"{i+1}. {result['profile']['title']} (Confidence: {confidence}%)"):
+                        st.write(f"**Link:** {result['profile']['link']}")
+                        st.write(f"**Snippet:** {result['profile']['snippet']}")
+
+                        st.subheader("Score Breakdown")
+                        scores = result["scores"]
+                        for score_type, score in scores.items():
+                            st.progress(score/100, text=f"{score_type}: {score}%")
+
+        # Image validation
+        if "search_results" in st.session_state and "image" in search_persona and st.button("Validate with Image Similarity"):
+            if os.environ.get("SCRAPINGDOG_API_KEY"):
+                with st.spinner("Validating candidates using image similarity..."):
+                    validated_results = validate_persona_match(
+                        st.session_state.search_results, 
+                        search_persona, 
+                        threshold=image_threshold
+                    )
+                    st.session_state.validated_results = validated_results
+
+                    st.subheader("Image-Validated LinkedIn Profiles")
+                    for i, result in enumerate(validated_results):
+                        match_icon = "✅" if result.get("image_match", False) else "❌"
+                        similarity = result.get("image_similarity", 0)
+
+                        with st.expander(f"{match_icon} {i+1}. {result['title']} (Similarity: {similarity:.2f})"):
+                            st.write(f"**Link:** {result['link']}")
+                            st.write(f"**Snippet:** {result['snippet']}")
+
+                            # Show images side by side if available
+                            if "profile_image" in result and result["profile_image"]:
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.subheader("Persona Image")
+                                    if search_persona["image"].startswith(("http", "https")):
+                                        st.image(search_persona["image"], width=150)
+                                    else:
+                                        try:
+                                            st.image(Image.open(search_persona["image"]), width=150)
+                                        except:
+                                            st.write("Could not load persona image")
+
+                                with col2:
+                                    st.subheader("LinkedIn Image")
+                                    st.image(result["profile_image"], width=150)
+            else:
+                st.error("SCRAPINGDOG_API_KEY not set in .env file. Cannot validate with image similarity.")
+
+        # Combined results (hybrid scoring)
+        if "scored_results" in st.session_state and "validated_results" in st.session_state:
+            st.subheader("Final Combined Results")
+            st.write("Top profiles based on both text scoring and image similarity")
+
+            for result in st.session_state.scored_results[:3]:  # Show top 3 results
+                profile_link = result["profile"]["link"]
+
+                # Find the image similarity score for this profile
+                img_similarity = 0.0
+                img_match = False
+                for v_result in st.session_state.validated_results:
+                    if v_result["link"] == profile_link:
+                        img_similarity = v_result.get("image_similarity", 0.0)
+                        img_match = v_result.get("image_match", False)
+                        profile_image = v_result.get("profile_image", None)
+                        break
+
+                confidence = result["confidence"]
+                match_icon = "✅" if img_match else "❌"
+
+                with st.expander(f"{match_icon} {result['profile']['title']}"):
+                    st.write(f"**Confidence:** {confidence}% | **Image similarity:** {img_similarity:.2f}")
+                    st.write(f"**Link:** {profile_link}")
+                    st.write(f"**Snippet:** {result['profile']['snippet']}")
+
+                    # Show scores
+                    st.subheader("Score Breakdown")
+                    scores = result["scores"]
+                    for score_type, score in scores.items():
+                        st.progress(score/100, text=f"{score_type}: {score}%")
+
+# Footer
+st.divider()
+st.markdown("LinkedIn Profile Finder | Developed with ❤️ using Streamlit and Gemini AI")
