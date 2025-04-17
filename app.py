@@ -236,7 +236,19 @@ with tabs[1]:
         
         with col2:
             if st.button("Enrich with People Data Labs"):
-                st.warning("People Data Labs API Key is missing. This feature is disabled.")
+                with st.spinner("Enriching data with People Data Labs API..."):
+                    if os.environ.get("PEOPLE_API_KEY"):
+                        # Get most enriched version of persona so far
+                        current_persona = st.session_state.get("enriched_persona", persona)
+
+                        # Enrich with PDL
+                        pdl_enriched = enrich_persona_with_pdl(current_persona)
+                        st.session_state.pdl_enriched_persona = pdl_enriched
+
+                        st.subheader("PDL-Enriched Persona")
+                        st.json(pdl_enriched)
+                    else:
+                        st.error("PEOPLE_API_KEY not set in .env file. Cannot use PDL enrichment.")
         
         with col3:
             if "social_data" in st.session_state and st.button("Enrich with Gemini AI"):
